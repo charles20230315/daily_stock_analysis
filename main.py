@@ -648,6 +648,10 @@ def main() -> int:
             logger.info("模式: 定时任务")
             logger.info(f"每日执行时间: {config.schedule_time}")
 
+            # 解析多个时间点
+            time_list = [t.strip() for t in config.schedule_time.split(',') if t.strip()]
+            logger.info(f"解析到 {len(time_list)} 个时间点: {['0' + t if len(t.split(':')[0]) == 1 else t for t in time_list]}")
+
             # Determine whether to run immediately:
             # Command line arg --no-run-immediately overrides config if present.
             # Otherwise use config (defaults to True).
@@ -657,16 +661,36 @@ def main() -> int:
             
             logger.info(f"启动时立即执行: {should_run_immediately}")
 
-            from src.scheduler import run_with_schedule
-
-            def scheduled_task():
-                run_full_analysis(config, args, stock_codes)
-
-            run_with_schedule(
-                task=scheduled_task,
-                schedule_time=config.schedule_time,
-                run_immediately=should_run_immediately
+            from src.scheduler import Scheduler
+            
+            # 创建调度器
+            scheduler = Scheduler(
+                schedule_times=config.schedule_time,
+                include_market_review=config.market_review_enabled
             )
+            
+            # 为每个时间点设置任务
+            for i, time_point in enumerate(time_list):
+                is_last_time = (i == len(time_list) - 1)
+                
+                def make_task(include_mr: bool, time: str):
+                    def task():
+                        # 临时修改 config 来控制是否执行大盘复盘
+                        original_mr = config.market_review_enabled
+                        config.market_review_enabled = include_mr
+                        try:
+                            logger.info(f"执行任务 - 时间点: {time}, 大盘复盘: {include_mr}")
+                            run_full_analysis(config, args, stock_codes)
+                        finally:
+                            config.market_review_enabled = original_mr
+                    return task
+                
+                # 最后一个时间点包含大盘复盘，其他时间点不包含
+                include_mr = is_last_time and config.market_review_enabled
+                run_now = should_run_immediately and (i == 0)
+                scheduler.set_task(time_point, make_task(include_mr, time_point), run_immediately=run_now)
+            
+            scheduler.run()
             return 0
 
         # 模式3: 正常单次运行
